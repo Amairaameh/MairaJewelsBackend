@@ -4,18 +4,36 @@ const ProductSchema = new mongoose.Schema({
     customId: {
         type: String,
         trim: true,
+        uppercase: true,
+        index: true
+    },
+    sku: {
+        type: String,
+        trim: true,
         uppercase: true
     },
     name: {
         type: String,
         required: [true, 'Please provide a product title'],
         trim: true,
-        maxlength: [200, 'Product name cannot exceed 200 characters']
+        maxlength: [250, 'Product name cannot exceed 250 characters']
+    },
+    slug: {
+        type: String,
+        trim: true,
+        lowercase: true,
+        index: true
     },
     category: {
         type: String,
         required: [true, 'Please assign a category'],
-        trim: true
+        trim: true,
+        index: true
+    },
+    subcategory: {
+        type: String,
+        trim: true,
+        default: ''
     },
     price: {
         type: String,
@@ -24,17 +42,28 @@ const ProductSchema = new mongoose.Schema({
     priceNum: {
         type: Number,
         required: [true, 'Please specify numeric price'],
-        min: [0, 'Price must be greater than or equal to 0']
+        min: [0, 'Price must be greater than or equal to 0'],
+        index: true
+    },
+    originalPrice: {
+        type: String,
+        default: ''
+    },
+    originalPriceNum: {
+        type: Number,
+        default: null
     },
     metal: {
         type: String,
         default: '18K Gold',
-        trim: true
+        trim: true,
+        index: true
     },
     gem: {
         type: String,
         default: 'Diamond',
-        trim: true
+        trim: true,
+        index: true
     },
     specs: {
         type: String,
@@ -78,7 +107,8 @@ const ProductSchema = new mongoose.Schema({
     },
     inStock: {
         type: Boolean,
-        default: true
+        default: true,
+        index: true
     },
     stock: {
         type: Number,
@@ -97,7 +127,8 @@ const ProductSchema = new mongoose.Schema({
     },
     featured: {
         type: Boolean,
-        default: false
+        default: false,
+        index: true
     },
     rating: {
         type: Number,
@@ -108,6 +139,14 @@ const ProductSchema = new mongoose.Schema({
     reviewsCount: {
         type: Number,
         default: 12
+    },
+    isActive: {
+        type: Boolean,
+        default: true
+    },
+    tags: {
+        type: [String],
+        default: []
     }
 }, {
     timestamps: true,
@@ -115,13 +154,26 @@ const ProductSchema = new mongoose.Schema({
     toObject: { virtuals: true }
 });
 
-// Auto-generate customId if not provided (first 3 letters of name + 4 digit random number)
+// Auto-generate customId, slug, and normalize price/images/stock before save
 ProductSchema.pre('save', function() {
+    // Generate customId / SKU if not provided
     if (!this.customId && this.name) {
         const clean = this.name.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
         const prefix = clean.length >= 3 ? clean.substring(0, 3) : (clean + 'PRD').substring(0, 3);
         const randNum = Math.floor(1000 + Math.random() * 9000);
         this.customId = `${prefix}-${randNum}`;
+    }
+    if (!this.sku) {
+        this.sku = this.customId;
+    }
+
+    // Generate URL-friendly slug
+    if (!this.slug && this.name) {
+        const baseSlug = this.name
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/(^-|-$)+/g, '');
+        this.slug = `${baseSlug}-${(this.customId || '').toLowerCase()}`.replace(/-+$/, '');
     }
 
     // Sync image arrays
@@ -137,12 +189,17 @@ ProductSchema.pre('save', function() {
     }
 
     // Ensure formatted price
-    if (!this.price && this.priceNum !== undefined) {
+    if ((!this.price || this.price === 'R 0.00') && this.priceNum !== undefined) {
         this.price = `R ${Number(this.priceNum).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
 
     // Sync stock fields (stock, countInStock, stockQty, inStock)
-    const stockVal = this.stock !== undefined ? Number(this.stock) : (this.countInStock !== undefined ? Number(this.countInStock) : (this.stockQty !== undefined ? Number(this.stockQty) : 10));
+    const stockVal = this.stock !== undefined
+        ? Number(this.stock)
+        : (this.countInStock !== undefined
+            ? Number(this.countInStock)
+            : (this.stockQty !== undefined ? Number(this.stockQty) : 10));
+
     this.stock = stockVal;
     this.countInStock = stockVal;
     this.stockQty = stockVal;
@@ -151,7 +208,7 @@ ProductSchema.pre('save', function() {
     }
 });
 
-// Virtual fields for colour and availableSizes aliases
+// Virtual fields for frontend compatibility
 ProductSchema.virtual('colour')
     .get(function() { return this.color; })
     .set(function(val) { this.color = val; });
@@ -160,11 +217,15 @@ ProductSchema.virtual('availableSizes')
     .get(function() { return this.sizes; })
     .set(function(val) { this.sizes = val; });
 
-// Indexes for fast lookup & filtering
-ProductSchema.index({ customId: 1 });
-ProductSchema.index({ name: 'text', description: 'text', specs: 'text', color: 'text', sizes: 'text' });
+ProductSchema.virtual('gemstone')
+    .get(function() { return this.gem; })
+    .set(function(val) { this.gem = val; });
+
+// Indexes for fast lookup, full-text search, and compound filtering
+ProductSchema.index({ name: 'text', description: 'text', specs: 'text', color: 'text', sizes: 'text', category: 'text' });
 ProductSchema.index({ category: 1, priceNum: 1 });
-ProductSchema.index({ featured: 1 });
+ProductSchema.index({ featured: 1, inStock: 1 });
 ProductSchema.index({ badge: 1 });
+ProductSchema.index({ createdAt: -1 });
 
 module.exports = mongoose.model('Product', ProductSchema);

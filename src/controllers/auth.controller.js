@@ -1,6 +1,7 @@
 const User = require('../models/User.model');
 const ApiError = require('../utils/apiError');
 const ApiResponse = require('../utils/apiResponse');
+const { sendWelcomeEmail } = require('../services/email.service');
 
 // @desc    Register a new customer
 // @route   POST /api/v1/auth/register
@@ -30,6 +31,9 @@ exports.register = async (req, res, next) => {
             role: 'customer',
             newsletter: newsletter !== undefined ? newsletter : true
         });
+
+        // Trigger Luxury Welcome Email Asynchronously
+        sendWelcomeEmail(user).catch(err => console.error('[Auth Welcome Email Error]:', err.message));
 
         const token = user.getSignedJwtToken();
 

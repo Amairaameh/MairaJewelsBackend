@@ -53,5 +53,7 @@ CategorySchema.pre('save', function () {
 });
 
 CategorySchema.index({ customId: 1 });
+CategorySchema.index({ order: 1, _id: 1 }); // Compound index for sorting
+CategorySchema.index({ isActive: 1 }); // Filter index for active categories
 
 module.exports = mongoose.model('Category', CategorySchema);

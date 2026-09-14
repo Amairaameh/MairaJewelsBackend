@@ -10,6 +10,10 @@ const { errorHandler, notFound } = require('./middlewares/error.middleware');
 
 const app = express();
 
+// Trust proxy - required when behind nginx/reverse proxy
+// This enables express-rate-limit to correctly identify client IPs
+app.set('trust proxy', 1);
+
 // Security HTTP headers
 app.use(helmet({
     crossOriginResourcePolicy: false
@@ -17,11 +21,57 @@ app.use(helmet({
 
 // Enable CORS for Frontend & Admin
 app.use(cors({
-    origin: '*',
+    origin: [
+        'https://www.mairajewels.co.za',
+        'https://mairajewels.co.za',
+        'https://admin.mairajewels.co.za',
+        'http://localhost:3000',
+        'http://localhost:3445',
+        'http://localhost:3001',
+        'http://localhost:5173', // Vite default
+        'http://localhost:5174'  // Vite alternative
+    ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 86400 // 24 hours
 }));
+
+// Manual CORS fallback and preflight handler
+app.use((req, res, next) => {
+    const allowedOrigins = [
+        'https://www.mairajewels.co.za',
+        'https://mairajewels.co.za',
+        'https://admin.mairajewels.co.za',
+        'http://localhost:3000',
+        'http://localhost:3445',
+        'http://localhost:3001',
+        'http://localhost:5173',
+        'http://localhost:5174'
+    ];
+
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+    }
+
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
+    // Prevent browser caching issues - disable cache for API responses
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+
+    // Handle preflight OPTIONS requests
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+
+    next();
+});
 
 // Body parsers
 app.use(express.json({ limit: '10mb' }));
@@ -45,6 +95,9 @@ app.use('/api', limiter);
 
 // Serve static uploads
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+// Serve static files (robots.txt, favicon.ico)
+app.use(express.static(path.join(__dirname, '../public')));
 
 // Root landing message
 app.get('/', (req, res) => {

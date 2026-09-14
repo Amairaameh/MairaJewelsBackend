@@ -3,6 +3,11 @@ const Payment = require('../models/Payment.model');
 const Product = require('../models/Product.model');
 const ApiError = require('../utils/apiError');
 const ApiResponse = require('../utils/apiResponse');
+const {
+    sendOrderConfirmationEmail,
+    sendPaymentConfirmationEmail,
+    sendOrderStatusUpdateEmail
+} = require('../services/email.service');
 
 // Helper to locate product for an order item
 const findProductForItem = async (item) => {
@@ -160,7 +165,7 @@ exports.createOrder = async (req, res, next) => {
         }
 
         // Automatically generate payment record
-        await Payment.create({
+        const paymentRecord = await Payment.create({
             transactionId: `TXN-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
             order: order._id,
             orderNumber: order.orderNumber,
@@ -171,6 +176,14 @@ exports.createOrder = async (req, res, next) => {
             method: paymentMethod || 'Credit Card',
             status: order.paymentStatus
         });
+
+        // Trigger Luxury Order Confirmation Email Asynchronously
+        sendOrderConfirmationEmail(order).catch(err => console.error('[Order Confirmation Email Error]:', err.message));
+
+        // Trigger Payment Confirmation Email if payment is verified/paid
+        if (order.paymentStatus === 'Paid' || order.paymentStatus === 'Completed') {
+            sendPaymentConfirmationEmail(paymentRecord, order).catch(err => console.error('[Payment Confirmation Email Error]:', err.message));
+        }
 
         res.status(201).json({
             success: true,
@@ -346,6 +359,9 @@ exports.updateOrderStatus = async (req, res, next) => {
             }
         }
 
+        const oldOrderStatus = order.orderStatus;
+        const oldPaymentStatus = order.paymentStatus;
+
         order = await Order.findByIdAndUpdate(order._id, updateData, {
             new: true,
             runValidators: true
@@ -354,6 +370,26 @@ exports.updateOrderStatus = async (req, res, next) => {
         // Keep payment record synced if paymentStatus changed
         if (paymentStatus) {
             await Payment.updateMany({ orderNumber: order.orderNumber }, { status: paymentStatus });
+        }
+
+        // Trigger Order Status Update Email if order status changed
+        if (resolvedStatus && resolvedStatus !== oldOrderStatus) {
+            sendOrderStatusUpdateEmail(order, oldOrderStatus, resolvedStatus).catch(err => {
+                console.error('[Order Status Update Email Error]:', err.message);
+            });
+        }
+
+        // Trigger Payment Confirmation Email if payment status transitioned to Paid
+        if (paymentStatus && (paymentStatus === 'Paid' || paymentStatus === 'Completed') && oldPaymentStatus !== paymentStatus) {
+            const latestPayment = await Payment.findOne({ orderNumber: order.orderNumber }) || {
+                transactionId: `TXN-${Date.now()}`,
+                amount: order.totalAmount,
+                orderNumber: order.orderNumber,
+                method: order.paymentMethod
+            };
+            sendPaymentConfirmationEmail(latestPayment, order).catch(err => {
+                console.error('[Payment Confirmation Email Error]:', err.message);
+            });
         }
 
         res.status(200).json(

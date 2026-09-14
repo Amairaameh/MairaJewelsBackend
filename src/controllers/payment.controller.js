@@ -1,6 +1,8 @@
 const Payment = require('../models/Payment.model');
+const Order = require('../models/Order.model');
 const ApiResponse = require('../utils/apiResponse');
 const ApiError = require('../utils/apiError');
+const { sendPaymentConfirmationEmail } = require('../services/email.service');
 
 // @desc    Get all payment records
 // @route   GET /api/v1/payments
@@ -65,6 +67,14 @@ exports.updatePaymentStatus = async (req, res, next) => {
 
         if (!payment) {
             return next(new ApiError(404, `Payment not found with id ${req.params.id}`));
+        }
+
+        // Trigger payment confirmation receipt email if verified/paid
+        if (status === 'Paid' || status === 'Completed') {
+            const order = await Order.findOne({ orderNumber: payment.orderNumber });
+            sendPaymentConfirmationEmail(payment, order || {}).catch(err => {
+                console.error('[Payment Update Email Error]:', err.message);
+            });
         }
 
         res.status(200).json(

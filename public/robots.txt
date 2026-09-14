@@ -1,0 +1,10 @@
+# Maira Jewels API - robots.txt
+User-agent: *
+Disallow: /api/
+Disallow: /uploads/
+
+# Allow only health check
+Allow: /api/v1/health
+
+# API documentation (if you add it in the future)
+Allow: /docs/

@@ -1,32 +1,33 @@
 const multer = require('multer');
-const path = require('path');
 const ApiError = require('../utils/apiError');
 
-// Storage configuration
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'uploads/');
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        const ext = path.extname(file.originalname);
-        cb(null, 'maira-' + uniqueSuffix + ext);
-    }
-});
+// Use memory storage for direct in-memory streaming / upload to Cloudflare R2
+const storage = multer.memoryStorage();
 
 // File filter (accept images only)
 const fileFilter = (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
+    const allowedMimeTypes = [
+        'image/jpeg',
+        'image/jpg',
+        'image/png',
+        'image/webp',
+        'image/avif',
+        'image/gif',
+        'image/svg+xml'
+    ];
+
+    if (allowedMimeTypes.includes(file.mimetype) || file.mimetype.startsWith('image/')) {
         cb(null, true);
     } else {
-        cb(new ApiError(400, 'Only image files (JPEG, PNG, WEBP, GIF) are allowed'), false);
+        cb(new ApiError(400, 'Invalid file format. Only JPEG, PNG, WEBP, AVIF, and GIF image files are allowed.'), false);
     }
 };
 
 const upload = multer({
     storage: storage,
     limits: {
-        fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 5 * 1024 * 1024 // 5MB
+        fileSize: parseInt(process.env.MAX_FILE_SIZE, 10) || 10 * 1024 * 1024, // 10MB default
+        files: 10 // Maximum 10 files per request
     },
     fileFilter: fileFilter
 });
