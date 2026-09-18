@@ -1,14 +1,21 @@
 const nodemailer = require('nodemailer');
 const {
-    getWelcomeEmailHtml,
+    getOrderStatusUpdateHtml,
+    getOrderStatusUpdateText,
     getOrderConfirmationHtml,
+    getOrderConfirmationText,
     getPaymentConfirmationHtml,
-    getOrderStatusUpdateHtml
+    getPaymentConfirmationText,
+    getPaymentStatusEmailHtml,
+    getPaymentStatusEmailText,
+    getWelcomeEmailHtml,
+    getWelcomeEmailText
 } = require('../templates/emailTemplates');
 
 const emailUser = process.env.EMAIL_USER || 'mairajewels.za@gmail.com';
 const emailPass = (process.env.EMAIL_PASS || 'wdlzrfoofihkqhsy').replace(/\s+/g, '');
-const emailFrom = process.env.EMAIL_FROM || `"Maira Jewels Luxury" <${emailUser}>`;
+const companyName = process.env.COMPANY_NAME || 'Maira Jewels';
+const emailFrom = process.env.EMAIL_FROM || `"${companyName}" <${emailUser}>`;
 
 // Create Nodemailer Transporter for Gmail SMTP
 const transporter = nodemailer.createTransport({
@@ -26,7 +33,7 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Generic Mail Dispatcher
+ * High-Deliverability Email Dispatcher (SPF/DKIM/SpamAssassin compliant)
  */
 const sendEmail = async ({ to, subject, html, text }) => {
     if (!to) {
@@ -38,13 +45,20 @@ const sendEmail = async ({ to, subject, html, text }) => {
         const mailOptions = {
             from: emailFrom,
             to,
+            replyTo: emailUser,
             subject,
             html,
-            text: text || subject
+            text: text || subject,
+            headers: {
+                'X-Mailer': 'Maira Jewels E-Commerce System',
+                'X-Auto-Response-Suppress': 'OOF, AutoReply',
+                'Precedence': 'bulk',
+                'List-Unsubscribe': `<mailto:${emailUser}?subject=Unsubscribe>`
+            }
         };
 
         const info = await transporter.sendMail(mailOptions);
-        console.log(`[Email Service] Email sent successfully to ${to} [MessageId: ${info.messageId}]`);
+        console.log(`[Email Service] Email dispatched successfully to ${to} [Subject: "${subject}", MessageId: ${info.messageId}]`);
         return info;
     } catch (error) {
         console.error(`[Email Service Error] Failed sending email to ${to}:`, error.message);
@@ -57,63 +71,119 @@ const sendEmail = async ({ to, subject, html, text }) => {
  */
 const sendWelcomeEmail = async (user) => {
     if (!user || !user.email) return false;
-    const html = getWelcomeEmailHtml({
-        name: user.name,
-        email: user.email,
-        customerId: user.customerId
-    });
+    
+    const html = getWelcomeEmailHtml(user);
+    const text = getWelcomeEmailText(user);
 
     return sendEmail({
         to: user.email,
-        subject: '✨ Welcome to Maira Jewels | Your Private Invitation to Luxury',
-        html
+        subject: `Welcome to Maira Jewels - Your Private Luxury Invitation`,
+        html,
+        text
     });
 };
 
 /**
- * 2. Send Order Confirmation Email
+ * 2. Send Order Confirmation Email (Upon Checkout)
  */
 const sendOrderConfirmationEmail = async (order) => {
     const to = order?.customer?.email || order?.user?.email;
     if (!to) return false;
 
+    const orderNum = order.orderNumber || order._id || 'MJ-ORDER';
     const html = getOrderConfirmationHtml(order);
-    return sendEmail({
+    const text = getOrderConfirmationText(order);
+
+    const clientRes = await sendEmail({
         to,
-        subject: `💎 Order Confirmed: #${order.orderNumber || 'MJ-ORDER'} | Maira Jewels`,
-        html
+        subject: `Order Confirmation #${orderNum} - Maira Jewels`,
+        html,
+        text
     });
+
+    // Notify boutique owner of new incoming order
+    if (emailUser && emailUser.toLowerCase() !== to.toLowerCase()) {
+        sendEmail({
+            to: emailUser,
+            subject: `[NEW ORDER] #${orderNum} - ${order?.customer?.name || 'Customer'} (${order?.totalAmount ? `R ${order.totalAmount}` : ''})`,
+            html,
+            text
+        }).catch(err => console.error('[Owner Order Notification Email Error]:', err.message));
+    }
+
+    return clientRes;
 };
 
 /**
- * 3. Send Payment Confirmation / Receipt Email
+ * 3. Send Payment Status Email (Paid, Unpaid, Failed, Refunded)
  */
-const sendPaymentConfirmationEmail = async (payment, order) => {
+const sendPaymentStatusEmail = async (payment, order = {}, targetStatus = '') => {
     const to = payment?.customerEmail || order?.customer?.email || order?.user?.email;
     if (!to) return false;
 
-    const html = getPaymentConfirmationHtml(payment, order);
+    const orderNum = payment?.orderNumber || order?.orderNumber || 'MJ-ORDER';
+    const statusClean = (targetStatus || payment?.status || order?.paymentStatus || 'Pending').trim();
+    const s = statusClean.toLowerCase();
+
+    let subject = `Payment Status Update: Order #${orderNum} (${statusClean}) - Maira Jewels`;
+    if (s.includes('paid') || s.includes('complete')) {
+        subject = `Official Payment Receipt: Order #${orderNum} - Maira Jewels`;
+    } else if (s.includes('fail')) {
+        subject = `Action Required: Payment Unsuccessful for Order #${orderNum} - Maira Jewels`;
+    } else if (s.includes('refund')) {
+        subject = `Refund Processed: Order #${orderNum} - Maira Jewels`;
+    } else if (s.includes('unpaid') || s.includes('pending')) {
+        subject = `Payment Pending: Order #${orderNum} - Complete via WhatsApp`;
+    }
+
+    const html = getPaymentStatusEmailHtml(payment, order, statusClean);
+    const text = getPaymentStatusEmailText(payment, order, statusClean);
+
     return sendEmail({
         to,
-        subject: `✓ Payment Verified: Order #${payment.orderNumber || order?.orderNumber || 'MJ-ORDER'} | Maira Jewels`,
-        html
+        subject,
+        html,
+        text
     });
 };
 
+const sendPaymentConfirmationEmail = async (payment, order) => {
+    return sendPaymentStatusEmail(payment, order, 'Paid');
+};
+
 /**
- * 4. Send Order Status Update Email
+ * 4. Send Order Status Update Email (Admin updates status)
  */
 const sendOrderStatusUpdateEmail = async (order, oldStatus, newStatus) => {
     const to = order?.customer?.email || order?.user?.email;
     if (!to) return false;
 
-    const html = getOrderStatusUpdateHtml(order, oldStatus, newStatus);
-    const statusUpper = (newStatus || order.orderStatus || 'Updated').toUpperCase();
+    const orderNum = order.orderNumber || order._id || 'MJ-ORDER';
+    const statusResolved = (newStatus || order.orderStatus || 'Updated').trim();
+    const s = statusResolved.toLowerCase();
+
+    // Clean, professional, high-deliverability subject line
+    let subject = `Order Update: #${orderNum} is now ${statusResolved} - Maira Jewels`;
+    if (s.includes('ship') || s.includes('dispatch') || s.includes('transit')) {
+        subject = `Your Maira Jewels order #${orderNum} has shipped`;
+    } else if (s.includes('out for delivery')) {
+        subject = `Out for Delivery: Your Maira Jewels order #${orderNum}`;
+    } else if (s.includes('deliver') || s.includes('complete')) {
+        subject = `Delivered: Your Maira Jewels order #${orderNum}`;
+    } else if (s.includes('process') || s.includes('craft') || s.includes('product') || s.includes('atelier')) {
+        subject = `Order Update: #${orderNum} is in atelier crafting - Maira Jewels`;
+    } else if (s.includes('cancel')) {
+        subject = `Order Update: Order #${orderNum} has been cancelled - Maira Jewels`;
+    }
+
+    const html = getOrderStatusUpdateHtml(order, oldStatus, statusResolved);
+    const text = getOrderStatusUpdateText(order, oldStatus, statusResolved);
 
     return sendEmail({
         to,
-        subject: `📦 Order Update: #${order.orderNumber} is now ${statusUpper} | Maira Jewels`,
-        html
+        subject,
+        html,
+        text
     });
 };
 
@@ -123,5 +193,6 @@ module.exports = {
     sendWelcomeEmail,
     sendOrderConfirmationEmail,
     sendPaymentConfirmationEmail,
+    sendPaymentStatusEmail,
     sendOrderStatusUpdateEmail
 };

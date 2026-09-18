@@ -32,13 +32,20 @@ const PaymentSchema = new mongoose.Schema({
     },
     method: {
         type: String,
-        enum: ['Credit Card', 'Debit Card', 'Instant EFT', 'PayFlex', 'Bank Transfer', 'Cash on Delivery'],
-        default: 'Credit Card'
+        enum: [
+            'WhatsApp Payment', 'WhatsApp Manual Payment', 'WhatsApp', 'Manual Payment',
+            'PayFast', 'PayFast (Credit/Debit Card)', 'Credit Card', 'Debit Card',
+            'Instant EFT', 'PayFlex', 'Bank Transfer', 'Cash on Delivery'
+        ],
+        default: 'WhatsApp Payment'
     },
     status: {
         type: String,
-        enum: ['Paid', 'Pending', 'Failed', 'Refunded'],
-        default: 'Paid'
+        enum: [
+            'Pending', 'Paid', 'Failed', 'Refunded', 'Refund', 'Unpaid', 'Completed', 'Cancelled', 'Canceled',
+            'pending', 'paid', 'failed', 'refunded', 'refund', 'unpaid', 'completed', 'cancelled', 'canceled'
+        ],
+        default: 'Pending'
     },
     gatewayResponse: {
         type: Object,

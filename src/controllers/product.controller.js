@@ -2,6 +2,7 @@ const Product = require('../models/Product.model');
 const ApiError = require('../utils/apiError');
 const ApiResponse = require('../utils/apiResponse');
 const { uploadMultipleFilesToR2, uploadFileToR2, deleteFileFromR2, deleteMultipleFilesFromR2 } = require('../services/r2.service');
+const { parsePrice, formatPrice } = require('../utils/priceFormatter');
 
 // Helper to find product by either MongoDB _id, customId, sku, or slug
 const findProductByIdOrCustomId = async (id) => {
@@ -132,7 +133,7 @@ exports.getProducts = async (req, res, next) => {
         else if (sort === 'newest') sortOption = { createdAt: -1 };
 
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
-        const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 50));
+        const limitNum = Math.min(1000, Math.max(1, parseInt(limit, 10) || 50));
         const skip = (pageNum - 1) * limitNum;
 
         const total = await Product.countDocuments(query);
@@ -208,6 +209,7 @@ exports.createProduct = async (req, res, next) => {
             specs,
             color,
             colour,
+            colors,
             sizes,
             availableSizes,
             badge,
@@ -257,11 +259,9 @@ exports.createProduct = async (req, res, next) => {
             parsedImages = ['https://images.unsplash.com/photo-1515562141207-7a88fb7ce338?auto=format&fit=crop&w=800&q=80'];
         }
 
-        const calculatedPriceNum = priceNum !== undefined
-            ? Number(priceNum)
-            : parseFloat(String(price).replace(/[^0-9.]/g, '')) || 0;
-
-        const formattedPrice = price || `R ${calculatedPriceNum.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const rawPrice = priceNum !== undefined && priceNum !== null ? priceNum : price;
+        const calculatedPriceNum = parsePrice(rawPrice);
+        const formattedPrice = formatPrice(calculatedPriceNum);
 
         // Auto-derive metal and gemstone from specs if not specified
         let resolvedMetal = metal || '';
@@ -293,6 +293,13 @@ exports.createProduct = async (req, res, next) => {
         const resolvedColor = color !== undefined ? color : (colour !== undefined ? colour : '');
         const resolvedSizes = sizes !== undefined ? sizes : (availableSizes !== undefined ? availableSizes : '');
 
+        let parsedColors = [];
+        if (colors) {
+            parsedColors = Array.isArray(colors) ? colors : String(colors).split(',').map(c => c.trim()).filter(Boolean);
+        } else if (resolvedColor) {
+            parsedColors = String(resolvedColor).split(',').map(c => c.trim()).filter(Boolean);
+        }
+
         let parsedTags = [];
         if (tags) {
             parsedTags = Array.isArray(tags) ? tags : String(tags).split(',').map(t => t.trim()).filter(Boolean);
@@ -311,7 +318,8 @@ exports.createProduct = async (req, res, next) => {
             metal: resolvedMetal,
             gem: resolvedGem,
             specs: specs || '',
-            color: resolvedColor,
+            color: resolvedColor || (parsedColors.length > 0 ? parsedColors.join(', ') : ''),
+            colors: parsedColors,
             sizes: resolvedSizes,
             badge: badge ? badge.trim() : '',
             image: parsedImages[0],
@@ -374,6 +382,19 @@ exports.updateProduct = async (req, res, next) => {
             updateData.sizes = updateData.availableSizes;
         }
 
+        // Colors array and string synchronization
+        if (updateData.colors !== undefined) {
+            const parsedColors = Array.isArray(updateData.colors)
+                ? updateData.colors
+                : String(updateData.colors).split(',').map(c => c.trim()).filter(Boolean);
+            updateData.colors = parsedColors;
+            if (updateData.color === undefined) {
+                updateData.color = parsedColors.join(', ');
+            }
+        } else if (updateData.color !== undefined && updateData.colors === undefined) {
+            updateData.colors = String(updateData.color).split(',').map(c => c.trim()).filter(Boolean);
+        }
+
         // Stock synchronization
         if (updateData.stock !== undefined || updateData.countInStock !== undefined || updateData.stockQty !== undefined) {
             const resolvedStock = updateData.stock !== undefined
@@ -390,13 +411,10 @@ exports.updateProduct = async (req, res, next) => {
         }
 
         // Price formatting
-        if (updateData.priceNum !== undefined) {
-            updateData.priceNum = Number(updateData.priceNum);
-            if (!updateData.price) {
-                updateData.price = `R ${updateData.priceNum.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-            }
-        } else if (updateData.price && updateData.priceNum === undefined) {
-            updateData.priceNum = parseFloat(String(updateData.price).replace(/[^0-9.]/g, '')) || 0;
+        if (updateData.priceNum !== undefined || updateData.price !== undefined) {
+            const rawPrice = updateData.priceNum !== undefined && updateData.priceNum !== null ? updateData.priceNum : updateData.price;
+            updateData.priceNum = parsePrice(rawPrice);
+            updateData.price = formatPrice(updateData.priceNum);
         }
 
         // Image array sync if images passed in body
@@ -424,7 +442,7 @@ exports.updateProduct = async (req, res, next) => {
         const updatedProduct = await Product.findByIdAndUpdate(
             product._id,
             updateData,
-            { new: true, runValidators: true }
+            { returnDocument: 'after', runValidators: true }
         );
 
         res.status(200).json(

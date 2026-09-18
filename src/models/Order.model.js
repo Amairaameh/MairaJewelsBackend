@@ -1,5 +1,19 @@
 const mongoose = require('mongoose');
 
+const addressSchema = new mongoose.Schema({
+    street: { type: String, default: '' },
+    apartment: { type: String, default: '' },
+    city: { type: String, default: '' },
+    province: { type: String, default: '' }, // e.g. Gauteng, Western Cape
+    postalCode: { type: String, default: '' },
+    country: { type: String, default: 'South Africa' },
+    // Backwards-compatibility aliases
+    address: { type: String, default: '' },
+    state: { type: String, default: '' },
+    zip: { type: String, default: '' },
+    deliveryMethod: { type: String, default: '' }
+}, { _id: false });
+
 const OrderItemSchema = new mongoose.Schema({
     product: {
         type: mongoose.Schema.Types.ObjectId,
@@ -31,25 +45,36 @@ const OrderSchema = new mongoose.Schema({
     customer: {
         name: { type: String, required: true },
         email: { type: String, required: true },
-        phone: { type: String, default: '' },
+        phone: { type: String, required: true },
+        organization: { type: String, default: '' },
+        taxType: { type: String, default: 'Personal' },
+        vatNumber: { type: String, default: '' },
         address: { type: String, default: '' }
     },
+    // Separate Delivery & Billing Addresses
     shippingAddress: {
-        street: { type: String, default: 'N/A' },
-        city: { type: String, default: 'N/A' },
-        province: { type: String, default: 'Gauteng' },
-        postalCode: { type: String, default: '0000' },
-        country: { type: String, default: 'South Africa' },
-        deliveryMethod: { type: String, default: 'Standard Delivery' }
+        type: addressSchema,
+        default: () => ({})
+    },
+    billingAddress: {
+        type: addressSchema,
+        default: () => ({})
     },
     items: [OrderItemSchema],
+    // Shipping method details
+    shippingMethod: { 
+        type: String, 
+        enum: ['Pudo Locker', 'Courier Guy Home', 'Standard Delivery', 'Courier Guy', 'Complimentary Luxury Delivery', 'Pudo', 'Locker Delivery', 'Door to Door Courier'],
+        default: 'Pudo Locker'
+    },
+    shippingFee: { 
+        type: Number, 
+        default: 60 
+    },
+    // Financial totals
     subtotal: {
         type: Number,
         required: true
-    },
-    shippingFee: {
-        type: Number,
-        default: 0
     },
     discount: {
         type: Number,
@@ -61,17 +86,35 @@ const OrderSchema = new mongoose.Schema({
     },
     paymentMethod: {
         type: String,
-        default: 'Credit Card'
+        default: 'WhatsApp Payment'
     },
     paymentStatus: {
         type: String,
-        enum: ['Paid', 'Pending', 'Failed', 'Refunded', 'paid', 'pending', 'failed', 'refunded'],
-        default: 'Paid'
+        enum: [
+            'Pending', 'Paid', 'Failed', 'Refunded', 'Refund', 'Unpaid', 'Completed', 'Cancelled', 'Canceled',
+            'pending', 'paid', 'failed', 'refunded', 'refund', 'unpaid', 'completed', 'cancelled', 'canceled'
+        ],
+        default: 'Pending'
     },
     orderStatus: {
         type: String,
-        enum: ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled', 'pending', 'processing', 'shipped', 'delivered', 'cancelled'],
-        default: 'Processing'
+        enum: [
+            'Pending', 'Confirmed', 'Processing', 'In Atelier', 'Dispatched', 'Shipped', 'In Transit', 'Out for Delivery', 'Delivered', 'Completed', 'Cancelled', 'Canceled', 'Refunded', 'Failed', 'On Hold',
+            'pending', 'confirmed', 'processing', 'in atelier', 'dispatched', 'shipped', 'in transit', 'out for delivery', 'delivered', 'completed', 'cancelled', 'canceled', 'refunded', 'failed', 'on hold'
+        ],
+        default: 'Pending'
+    },
+    agreements: {
+        termsAgreed: { type: Boolean, default: true },
+        conciergeAuthorized: { type: Boolean, default: true }
+    },
+    carrier: {
+        type: String,
+        default: 'The Courier Guy / RAM Hand-to-Hand'
+    },
+    estimatedDelivery: {
+        type: String,
+        default: ''
     },
     trackingNumber: {
         type: String,
@@ -93,7 +136,7 @@ OrderSchema.virtual('total')
     .set(function(v) { this.totalAmount = Number(v); });
 
 OrderSchema.virtual('status')
-    .get(function() { return (this.orderStatus || 'processing').toLowerCase(); })
+    .get(function() { return this.orderStatus || 'Pending'; })
     .set(function(v) { this.orderStatus = v; });
 
 // Indexes for order lookup and filtering

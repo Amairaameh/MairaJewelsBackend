@@ -1,0 +1,89 @@
+<div style="font-family: 'Helvetica Neue', Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #1c1510; background: #ffffff; padding: 24px; border: 1px solid #e5e1d8; border-radius: 8px;">
+    
+    <!-- Header -->
+    <div style="text-align: center; padding-bottom: 20px; border-bottom: 2px solid #c8a97e;">
+        <h1 style="color: #1c1510; font-size: 24px; margin: 0; letter-spacing: 0.05em;">MAIRA JEWELS</h1>
+        <p style="color: #8c7b70; font-size: 13px; margin: 4px 0 0; text-transform: uppercase;">Fine Jewellery Concierge</p>
+    </div>
+
+    <!-- Order Notice -->
+    <div style="background: #faf8f5; border-left: 4px solid #c8a97e; padding: 14px 16px; margin: 20px 0;">
+        <h3 style="margin: 0 0 6px; font-size: 16px; color: #1c1510;">Order Received — #{{orderNumber}}</h3>
+        <p style="margin: 0; font-size: 13px; color: #6b6357; line-height: 1.5;">
+            Thank you for your order! Your items are reserved. Please complete payment via WhatsApp Concierge to confirm dispatch.
+        </p>
+    </div>
+
+    <!-- Addresses Grid -->
+    <table width="100%" style="margin: 20px 0; border-collapse: collapse;">
+        <tr>
+            <td width="50%" style="vertical-align: top; padding-right: 10px;">
+                <div style="background: #fdfcfb; border: 1px solid #ece8e1; border-radius: 6px; padding: 14px;">
+                    <strong style="font-size: 13px; color: #1c1510; display: block; margin-bottom: 6px;">📦 Delivery Address</strong>
+                    <div style="font-size: 12px; color: #4a453e; line-height: 1.5;">
+                        {{shippingAddress.street}}<br>
+                        {{#if shippingAddress.apartment}}{{shippingAddress.apartment}}<br>{{/if}}
+                        {{shippingAddress.city}}, {{shippingAddress.province}} {{shippingAddress.postalCode}}<br>
+                        South Africa
+                    </div>
+                </div>
+            </td>
+            <td width="50%" style="vertical-align: top; padding-left: 10px;">
+                <div style="background: #fdfcfb; border: 1px solid #ece8e1; border-radius: 6px; padding: 14px;">
+                    <strong style="font-size: 13px; color: #1c1510; display: block; margin-bottom: 6px;">🏠 Billing Address</strong>
+                    <div style="font-size: 12px; color: #4a453e; line-height: 1.5;">
+                        {{billingAddress.street}}<br>
+                        {{#if billingAddress.apartment}}{{billingAddress.apartment}}<br>{{/if}}
+                        {{billingAddress.city}}, {{billingAddress.province}} {{billingAddress.postalCode}}<br>
+                        South Africa
+                    </div>
+                </div>
+            </td>
+        </tr>
+    </table>
+
+    <!-- Shipping Method Badge -->
+    <div style="background: #f7f9fa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px 16px; margin: 15px 0;">
+        <span style="font-size: 13px; color: #334155;"><strong>Shipping Method:</strong> {{shippingMethod}} (1 to 3 business days) — R {{shippingFee}}.00</span>
+    </div>
+
+    <!-- Items Table -->
+    <h3 style="font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; margin: 24px 0 10px; border-bottom: 1px solid #ece8e1; padding-bottom: 6px;">Ordered Items</h3>
+    <table width="100%" style="border-collapse: collapse; margin-bottom: 20px;">
+        {{#each items}}
+        <tr style="border-bottom: 1px solid #f2eee9;">
+            <td style="padding: 10px 0; font-size: 13px;">
+                <strong>{{name}}</strong>
+                <span style="display: block; font-size: 11px; color: #8c7b70;">Qty: {{quantity}} {{#if color}}· {{color}}{{/if}} {{#if size}}· {{size}}{{/if}}</span>
+            </td>
+            <td style="padding: 10px 0; text-align: right; font-size: 13px; font-weight: bold; color: #1c1510;">
+                R {{price}}
+            </td>
+        </tr>
+        {{/each}}
+    </table>
+
+    <!-- Financial Summary -->
+    <table width="100%" style="border-collapse: collapse; margin-top: 10px; font-size: 13px;">
+        <tr>
+            <td style="padding: 4px 0; color: #6b6357;">Subtotal</td>
+            <td style="padding: 4px 0; text-align: right;">R {{subtotal}}</td>
+        </tr>
+        <tr>
+            <td style="padding: 4px 0; color: #6b6357;">Shipping ({{shippingMethod}})</td>
+            <td style="padding: 4px 0; text-align: right;">R {{shippingFee}}</td>
+        </tr>
+        <tr style="border-top: 1px solid #c8a97e; font-size: 15px; font-weight: bold;">
+            <td style="padding: 8px 0; color: #1c1510;">Total Amount</td>
+            <td style="padding: 8px 0; text-align: right; color: #b08850;">R {{total}}</td>
+        </tr>
+    </table>
+
+    <!-- WhatsApp CTA Button -->
+    <div style="text-align: center; margin: 30px 0 15px;">
+        <a href="https://api.whatsapp.com/send?phone=27839228383&text=Hi%20Maira%20Jewels,%20I%20placed%20order%20%23{{orderNumber}}%20and%20would%20like%20to%20complete%20payment." 
+           style="background: #25D366; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 6px; font-weight: bold; font-size: 14px; display: inline-block;">
+            💬 Complete Payment on WhatsApp (+27 83 922 8383)
+        </a>
+    </div>
+</div>

@@ -6,8 +6,10 @@ const ApiResponse = require('../utils/apiResponse');
 const {
     sendOrderConfirmationEmail,
     sendPaymentConfirmationEmail,
+    sendPaymentStatusEmail,
     sendOrderStatusUpdateEmail
 } = require('../services/email.service');
+const { parsePrice, formatPrice } = require('../utils/priceFormatter');
 
 // Helper to locate product for an order item
 const findProductForItem = async (item) => {
@@ -28,6 +30,25 @@ const findProductForItem = async (item) => {
     return null;
 };
 
+// South Africa Regional Validation Helpers
+const isValidSouthAfricanPhone = (phone) => {
+    if (!phone) return false;
+    const cleaned = String(phone).replace(/[\s\-\(\)\.]/g, '');
+    return /^(?:\+27|27|0)[1-9]\d{8}$/.test(cleaned);
+};
+
+const isValidSouthAfricanPostalCode = (code) => {
+    if (!code) return false;
+    const cleaned = String(code).trim();
+    return /^\d{4}$/.test(cleaned);
+};
+
+const isSouthAfricaCountry = (country) => {
+    if (!country) return true; // defaults to South Africa
+    const c = String(country).trim().toLowerCase();
+    return ['south africa', 'southafrica', 'za', 'rsa', 'zaf'].includes(c);
+};
+
 // Generate unique order number
 const generateOrderNumber = () => {
     const timestamp = Date.now().toString().slice(-6);
@@ -38,23 +59,24 @@ const generateOrderNumber = () => {
 // @desc    Create new order
 // @route   POST /api/v1/orders
 // @access  Public / Protected (Optional token)
-// @desc    Create new order
-// @route   POST /api/v1/orders
-// @access  Public / Protected (Optional token)
 exports.createOrder = async (req, res, next) => {
     try {
         const {
             customer,
             shippingAddress,
+            billingAddress,
             items,
             subtotal,
-            shippingFee = 0,
+            shippingMethod = 'Pudo Locker',
+            shippingFee = 60,
             discount = 0,
             total,
             totalAmount,
-            paymentMethod = 'Credit Card',
+            paymentMethod = 'WhatsApp Payment',
+            paymentStatus,
             status,
-            orderStatus,
+            orderStatus = 'Pending',
+            agreements,
             notes
         } = req.body;
 
@@ -62,32 +84,165 @@ exports.createOrder = async (req, res, next) => {
             return next(new ApiError(400, 'Cannot place order with empty items'));
         }
 
-        if (!customer || !customer.name || !customer.email) {
-            return next(new ApiError(400, 'Customer name and email are required'));
+        // 1. Strict Customer / Billing Details Validation
+        if (!customer || !customer.name || !customer.name.trim()) {
+            return next(new ApiError(400, 'Full name is required for billing'));
         }
 
-        // Normalize shipping address (fallback to customer.address or defaults if not structured object)
-        let resolvedShippingAddress = shippingAddress;
-        if (!resolvedShippingAddress || typeof resolvedShippingAddress !== 'object' || !resolvedShippingAddress.street) {
-            const fullAddressStr = (typeof shippingAddress === 'string' ? shippingAddress : customer.address) || '123 Main Street';
+        if (!customer.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(customer.email).trim())) {
+            return next(new ApiError(400, 'A valid email address is required for order confirmation'));
+        }
+
+        if (!customer.phone || !String(customer.phone).trim()) {
+            return next(new ApiError(400, 'Phone number is required for courier delivery updates'));
+        }
+
+        if (!isValidSouthAfricanPhone(customer.phone)) {
+            return next(new ApiError(400, 'Please provide a valid South African phone number (e.g., 082 123 4567 or +27 82 123 4567)'));
+        }
+
+        // Normalize customer with optional billing & tax details
+        const resolvedCustomer = {
+            name: customer.name.trim(),
+            email: customer.email.trim().toLowerCase(),
+            phone: customer.phone.trim(),
+            organization: customer.organization ? customer.organization.trim() : '',
+            taxType: customer.taxType || 'Personal',
+            vatNumber: customer.vatNumber ? customer.vatNumber.trim() : '',
+            address: customer.address ? customer.address.trim() : ''
+        };
+
+        // Normalize shipping address dynamically from incoming payload
+        let resolvedShippingAddress = {};
+        if (typeof shippingAddress === 'string') {
             resolvedShippingAddress = {
-                street: fullAddressStr,
-                city: 'Cape Town',
-                province: 'Western Cape',
-                postalCode: '8001',
+                street: shippingAddress.trim(),
+                address: shippingAddress.trim(),
+                apartment: '',
+                city: '',
+                province: '',
+                state: '',
+                postalCode: '',
+                zip: '',
                 country: 'South Africa',
-                deliveryMethod: 'Standard'
+                deliveryMethod: shippingMethod || ''
             };
+        } else if (shippingAddress && typeof shippingAddress === 'object') {
+            const streetVal = (shippingAddress.street || shippingAddress.address || '').trim();
+            const addressVal = (shippingAddress.address || shippingAddress.street || '').trim();
+            const provVal = (shippingAddress.province || shippingAddress.state || '').trim();
+            const stateVal = (shippingAddress.state || shippingAddress.province || '').trim();
+            const postVal = (shippingAddress.postalCode || shippingAddress.zip || '').trim();
+            const zipVal = (shippingAddress.zip || shippingAddress.postalCode || '').trim();
+            const countryVal = (shippingAddress.country || 'South Africa').trim();
+
+            resolvedShippingAddress = {
+                street: streetVal,
+                address: addressVal,
+                apartment: (shippingAddress.apartment || '').trim(),
+                city: (shippingAddress.city || '').trim(),
+                province: provVal,
+                state: stateVal,
+                postalCode: postVal,
+                zip: zipVal,
+                country: countryVal,
+                deliveryMethod: (shippingAddress.deliveryMethod || shippingMethod || '').trim()
+            };
+        } else if (customer?.address) {
+            resolvedShippingAddress = {
+                street: customer.address.trim(),
+                address: customer.address.trim(),
+                apartment: '',
+                city: '',
+                province: '',
+                state: '',
+                postalCode: '',
+                zip: '',
+                country: 'South Africa',
+                deliveryMethod: shippingMethod || ''
+            };
+        }
+
+        // Normalize billing address dynamically (uses billingAddress or inherits from shippingAddress/customer)
+        let resolvedBillingAddress = {};
+        if (typeof billingAddress === 'string') {
+            resolvedBillingAddress = {
+                street: billingAddress.trim(),
+                address: billingAddress.trim(),
+                apartment: '',
+                city: '',
+                province: '',
+                state: '',
+                postalCode: '',
+                zip: '',
+                country: 'South Africa'
+            };
+        } else if (billingAddress && typeof billingAddress === 'object') {
+            const bStreet = (billingAddress.street || billingAddress.address || resolvedShippingAddress.street || '').trim();
+            const bAddress = (billingAddress.address || billingAddress.street || resolvedShippingAddress.address || '').trim();
+            const bProv = (billingAddress.province || billingAddress.state || resolvedShippingAddress.province || '').trim();
+            const bState = (billingAddress.state || billingAddress.province || resolvedShippingAddress.state || '').trim();
+            const bPost = (billingAddress.postalCode || billingAddress.zip || resolvedShippingAddress.postalCode || '').trim();
+            const bZip = (billingAddress.zip || billingAddress.postalCode || resolvedShippingAddress.zip || '').trim();
+            const bCountry = (billingAddress.country || resolvedShippingAddress.country || 'South Africa').trim();
+
+            resolvedBillingAddress = {
+                street: bStreet,
+                address: bAddress,
+                apartment: (billingAddress.apartment || resolvedShippingAddress.apartment || '').trim(),
+                city: (billingAddress.city || resolvedShippingAddress.city || '').trim(),
+                province: bProv,
+                state: bState,
+                postalCode: bPost,
+                zip: bZip,
+                country: bCountry
+            };
+        } else {
+            resolvedBillingAddress = {
+                street: resolvedShippingAddress.street || '',
+                address: resolvedShippingAddress.address || '',
+                apartment: resolvedShippingAddress.apartment || '',
+                city: resolvedShippingAddress.city || '',
+                province: resolvedShippingAddress.province || '',
+                state: resolvedShippingAddress.state || '',
+                postalCode: resolvedShippingAddress.postalCode || '',
+                zip: resolvedShippingAddress.zip || '',
+                country: resolvedShippingAddress.country || 'South Africa'
+            };
+        }
+
+        // 2. Strict South Africa Address Validations
+        const streetAddress = resolvedShippingAddress.street || resolvedBillingAddress.street || resolvedCustomer.address;
+        if (!streetAddress || !streetAddress.trim()) {
+            return next(new ApiError(400, 'Street address is required for billing and delivery'));
+        }
+
+        if (!resolvedShippingAddress.city && !resolvedBillingAddress.city) {
+            return next(new ApiError(400, 'City / Town is required'));
+        }
+
+        if (resolvedShippingAddress.country && !isSouthAfricaCountry(resolvedShippingAddress.country)) {
+            return next(new ApiError(400, 'We only accept orders and provide delivery within South Africa'));
+        }
+
+        if (resolvedBillingAddress.country && !isSouthAfricaCountry(resolvedBillingAddress.country)) {
+            return next(new ApiError(400, 'Billing address must be within South Africa'));
+        }
+
+        const postalCodeToCheck = resolvedShippingAddress.postalCode || resolvedBillingAddress.postalCode;
+        if (!postalCodeToCheck || !postalCodeToCheck.trim()) {
+            return next(new ApiError(400, 'Postal code is required'));
+        }
+
+        if (!isValidSouthAfricanPostalCode(postalCodeToCheck)) {
+            return next(new ApiError(400, 'Please provide a valid 4-digit South African postal code (e.g., 8001 or 2000)'));
         }
 
         // Normalize items array
         const normalizedItems = items.map(item => {
-            const numPrice = typeof item.price === 'number'
-                ? item.price
-                : (parseFloat(String(item.price || '').replace(/[^0-9.]/g, '')) || 0);
-            const strPrice = typeof item.price === 'string' && item.price.startsWith('R')
-                ? item.price
-                : `R ${numPrice.toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            const rawPrice = item.priceNum !== undefined && item.priceNum !== null ? item.priceNum : item.price;
+            const numPrice = parsePrice(rawPrice);
+            const strPrice = formatPrice(numPrice);
 
             return {
                 ...item,
@@ -99,6 +254,7 @@ exports.createOrder = async (req, res, next) => {
                 colour: item.colour || item.color || '',
                 size: item.size || item.sizes || '',
                 sizes: item.sizes || item.size || '',
+                specs: item.specs || '',
                 image: item.image || item.img || ''
             };
         });
@@ -129,27 +285,49 @@ exports.createOrder = async (req, res, next) => {
             }
         }
 
-        const calculatedSubtotal = Number(subtotal) || normalizedItems.reduce((acc, i) => acc + (i.priceNum * i.quantity), 0);
+        const calculatedSubtotal = subtotal !== undefined && subtotal !== null && !isNaN(parsePrice(subtotal)) && parsePrice(subtotal) > 0
+            ? parsePrice(subtotal)
+            : normalizedItems.reduce((acc, i) => acc + (i.priceNum * i.quantity), 0);
+        const resolvedShippingFee = shippingFee !== undefined ? parsePrice(shippingFee) : 60;
+        const resolvedDiscount = discount !== undefined ? parsePrice(discount) : 0;
         const resolvedTotalAmount = totalAmount !== undefined
-            ? Number(totalAmount)
-            : (total !== undefined ? Number(total) : (calculatedSubtotal + Number(shippingFee) - Number(discount)));
+            ? parsePrice(totalAmount)
+            : (total !== undefined ? parsePrice(total) : (calculatedSubtotal + resolvedShippingFee - resolvedDiscount));
 
-        const resolvedStatus = orderStatus || status || 'Processing';
+        const resolvedStatus = orderStatus || status || 'Pending';
         const orderNumber = generateOrderNumber();
+
+        // Determine Payment Status
+        let resolvedPaymentStatus = 'Pending';
+        if (paymentStatus) {
+            resolvedPaymentStatus = paymentStatus;
+        } else if (paymentMethod === 'WhatsApp Payment' || paymentMethod === 'Cash on Delivery' || paymentMethod === 'EFT') {
+            resolvedPaymentStatus = 'Pending';
+        } else if (paymentMethod === 'Credit Card' || paymentMethod === 'PayFast') {
+            resolvedPaymentStatus = 'Paid';
+        }
+
+        const resolvedAgreements = {
+            termsAgreed: agreements?.termsAgreed !== undefined ? Boolean(agreements.termsAgreed) : true,
+            conciergeAuthorized: agreements?.conciergeAuthorized !== undefined ? Boolean(agreements.conciergeAuthorized) : true
+        };
 
         const order = await Order.create({
             orderNumber,
             user: req.user ? req.user.id : null,
-            customer,
+            customer: resolvedCustomer,
             shippingAddress: resolvedShippingAddress,
+            billingAddress: resolvedBillingAddress,
             items: normalizedItems,
+            shippingMethod: shippingMethod || 'Pudo Locker',
+            shippingFee: resolvedShippingFee,
             subtotal: calculatedSubtotal,
-            shippingFee: Number(shippingFee),
-            discount: Number(discount),
+            discount: resolvedDiscount,
             totalAmount: resolvedTotalAmount,
-            paymentMethod: paymentMethod || 'Credit Card',
-            paymentStatus: paymentMethod === 'Cash on Delivery' ? 'Pending' : 'Paid',
+            paymentMethod: 'WhatsApp Manual Payment',
+            paymentStatus: resolvedPaymentStatus,
             orderStatus: resolvedStatus,
+            agreements: resolvedAgreements,
             notes: notes || ''
         });
 
@@ -173,7 +351,7 @@ exports.createOrder = async (req, res, next) => {
             customerEmail: customer.email,
             amount: order.totalAmount,
             currency: 'ZAR',
-            method: paymentMethod || 'Credit Card',
+            method: 'WhatsApp Manual Payment',
             status: order.paymentStatus
         });
 
@@ -323,13 +501,31 @@ exports.getOrderById = async (req, res, next) => {
 // @access  Private/Admin
 exports.updateOrderStatus = async (req, res, next) => {
     try {
-        const { orderStatus, status, trackingNumber, paymentStatus } = req.body;
+        const { orderStatus, status, trackingNumber, carrier, estimatedDelivery, paymentStatus, notes, sendEmail: shouldSendEmail = true } = req.body;
 
-        const resolvedStatus = orderStatus || status;
+        const isPaymentStatusRoute = req.originalUrl && req.originalUrl.includes('payment-status');
+        const paymentKeywords = ['paid', 'unpaid', 'failed', 'refund', 'refunded'];
+
+        let resolvedPaymentStatus = paymentStatus;
+        let resolvedOrderStatus = orderStatus;
+
+        if (isPaymentStatusRoute) {
+            resolvedPaymentStatus = paymentStatus || status;
+        } else if (status) {
+            if (paymentKeywords.includes(String(status).toLowerCase())) {
+                resolvedPaymentStatus = resolvedPaymentStatus || status;
+            } else {
+                resolvedOrderStatus = resolvedOrderStatus || status;
+            }
+        }
+
         const updateData = {};
-        if (resolvedStatus) updateData.orderStatus = resolvedStatus;
+        if (resolvedOrderStatus) updateData.orderStatus = resolvedOrderStatus;
+        if (resolvedPaymentStatus) updateData.paymentStatus = resolvedPaymentStatus;
         if (trackingNumber !== undefined) updateData.trackingNumber = trackingNumber;
-        if (paymentStatus) updateData.paymentStatus = paymentStatus;
+        if (carrier !== undefined) updateData.carrier = carrier;
+        if (estimatedDelivery !== undefined) updateData.estimatedDelivery = estimatedDelivery;
+        if (notes !== undefined) updateData.notes = notes;
 
         let order = await findOrderByIdOrNumber(req.params.id);
 
@@ -338,7 +534,9 @@ exports.updateOrderStatus = async (req, res, next) => {
         }
 
         // If order is being cancelled, restore stock to products
-        if (resolvedStatus === 'Cancelled' && order.orderStatus !== 'Cancelled') {
+        const isCancelling = resolvedOrderStatus && resolvedOrderStatus.toLowerCase() === 'cancelled';
+        const wasCancelled = order.orderStatus && order.orderStatus.toLowerCase() === 'cancelled';
+        if (isCancelling && !wasCancelled && order.items && Array.isArray(order.items)) {
             for (const item of order.items) {
                 const qtyToRestore = Math.max(1, Number(item.quantity) || 1);
                 const product = await findProductForItem(item);
@@ -363,37 +561,38 @@ exports.updateOrderStatus = async (req, res, next) => {
         const oldPaymentStatus = order.paymentStatus;
 
         order = await Order.findByIdAndUpdate(order._id, updateData, {
-            new: true,
+            returnDocument: 'after',
             runValidators: true
         });
 
         // Keep payment record synced if paymentStatus changed
-        if (paymentStatus) {
-            await Payment.updateMany({ orderNumber: order.orderNumber }, { status: paymentStatus });
+        if (resolvedPaymentStatus) {
+            await Payment.updateMany({ orderNumber: order.orderNumber }, { status: resolvedPaymentStatus });
         }
 
-        // Trigger Order Status Update Email if order status changed
-        if (resolvedStatus && resolvedStatus !== oldOrderStatus) {
-            sendOrderStatusUpdateEmail(order, oldOrderStatus, resolvedStatus).catch(err => {
+        // Trigger Order Status Update Email if order status updated or tracking added
+        if (shouldSendEmail && (resolvedOrderStatus || trackingNumber !== undefined)) {
+            sendOrderStatusUpdateEmail(order, oldOrderStatus, resolvedOrderStatus || order.orderStatus).catch(err => {
                 console.error('[Order Status Update Email Error]:', err.message);
             });
         }
 
-        // Trigger Payment Confirmation Email if payment status transitioned to Paid
-        if (paymentStatus && (paymentStatus === 'Paid' || paymentStatus === 'Completed') && oldPaymentStatus !== paymentStatus) {
+        // Trigger Payment Status Email if payment status changed
+        if (shouldSendEmail && resolvedPaymentStatus && resolvedPaymentStatus.toLowerCase() !== String(oldPaymentStatus || '').toLowerCase()) {
             const latestPayment = await Payment.findOne({ orderNumber: order.orderNumber }) || {
                 transactionId: `TXN-${Date.now()}`,
                 amount: order.totalAmount,
                 orderNumber: order.orderNumber,
-                method: order.paymentMethod
+                method: order.paymentMethod,
+                status: resolvedPaymentStatus
             };
-            sendPaymentConfirmationEmail(latestPayment, order).catch(err => {
-                console.error('[Payment Confirmation Email Error]:', err.message);
+            sendPaymentStatusEmail(latestPayment, order, resolvedPaymentStatus).catch(err => {
+                console.error('[Payment Status Update Email Error]:', err.message);
             });
         }
 
         res.status(200).json(
-            new ApiResponse(200, { order }, 'Order status updated')
+            new ApiResponse(200, { order }, 'Order status updated successfully')
         );
     } catch (error) {
         next(error);

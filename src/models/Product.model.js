@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { parsePrice, formatPrice } = require('../utils/priceFormatter');
 
 const ProductSchema = new mongoose.Schema({
     customId: {
@@ -74,6 +75,10 @@ const ProductSchema = new mongoose.Schema({
         type: String,
         default: '',
         trim: true
+    },
+    colors: {
+        type: [String],
+        default: []
     },
     sizes: {
         type: String,
@@ -188,9 +193,22 @@ ProductSchema.pre('save', function() {
         this.thumbs = [this.image];
     }
 
-    // Ensure formatted price
-    if ((!this.price || this.price === 'R 0.00') && this.priceNum !== undefined) {
-        this.price = `R ${Number(this.priceNum).toLocaleString('en-ZA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    // Sync colors array and color string
+    if (this.colors && Array.isArray(this.colors) && this.colors.length > 0) {
+        if (!this.color) {
+            this.color = this.colors.join(', ');
+        }
+    } else if (this.color && (!this.colors || this.colors.length === 0)) {
+        this.colors = this.color.split(',').map(c => c.trim()).filter(Boolean);
+    }
+
+    // Ensure formatted price & priceNum sync
+    if (this.priceNum !== undefined && this.priceNum !== null) {
+        this.priceNum = parsePrice(this.priceNum);
+        this.price = formatPrice(this.priceNum);
+    } else if (this.price) {
+        this.priceNum = parsePrice(this.price);
+        this.price = formatPrice(this.priceNum);
     }
 
     // Sync stock fields (stock, countInStock, stockQty, inStock)

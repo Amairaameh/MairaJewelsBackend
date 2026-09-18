@@ -29,6 +29,14 @@ const errorHandler = (err, req, res, next) => {
         error = new ApiError(400, message);
     }
 
+    // Multer upload errors
+    if (err.name === 'MulterError') {
+        const message = err.code === 'LIMIT_FILE_SIZE' 
+            ? 'File size exceeds maximum allowed limit' 
+            : `Upload error: ${err.message}${err.field ? ` (field: ${err.field})` : ''}`;
+        error = new ApiError(400, message);
+    }
+
     // JWT errors
     if (err.name === 'JsonWebTokenError') {
         error = new ApiError(401, 'Invalid authentication token');

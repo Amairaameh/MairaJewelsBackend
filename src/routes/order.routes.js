@@ -26,8 +26,16 @@ router.get('/my-orders', protect, getMyOrders);
 
 router.route('/:id')
     .get(optionalAuth, getOrderById)
+    .put(protect, authorize('admin', 'manager'), updateOrderStatus)
+    .patch(protect, authorize('admin', 'manager'), updateOrderStatus)
     .delete(protect, authorize('admin'), deleteOrder);
 
-router.patch('/:id/status', protect, authorize('admin', 'manager'), updateOrderStatus);
+router.route('/:id/status')
+    .put(protect, authorize('admin', 'manager'), updateOrderStatus)
+    .patch(protect, authorize('admin', 'manager'), updateOrderStatus);
+
+router.route('/:id/payment-status')
+    .put(protect, authorize('admin', 'manager'), updateOrderStatus)
+    .patch(protect, authorize('admin', 'manager'), updateOrderStatus);
 
 module.exports = router;

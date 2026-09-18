@@ -111,6 +111,7 @@ app.get('/', (req, res) => {
 
 // Mount Master API Router
 app.use('/api/v1', routes);
+app.use('/api', routes);
 
 // 404 handler
 app.use(notFound);

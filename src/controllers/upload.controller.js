@@ -7,15 +7,16 @@ const { uploadFileToR2, uploadMultipleFilesToR2, deleteFileFromR2 } = require('.
 // @access  Private/Admin
 exports.uploadSingle = async (req, res, next) => {
     try {
-        if (!req.file) {
+        const file = req.file || (req.files && req.files.length > 0 ? req.files[0] : null);
+        if (!file) {
             return next(new ApiError(400, 'Please select a valid image file to upload'));
         }
 
         const folder = req.body.folder || 'products';
         const result = await uploadFileToR2({
-            buffer: req.file.buffer,
-            originalname: req.file.originalname,
-            mimetype: req.file.mimetype,
+            buffer: file.buffer,
+            originalname: file.originalname,
+            mimetype: file.mimetype,
             folder
         });
 
@@ -38,12 +39,24 @@ exports.uploadSingle = async (req, res, next) => {
 // @access  Private/Admin
 exports.uploadMultiple = async (req, res, next) => {
     try {
-        if (!req.files || req.files.length === 0) {
+        const rawFiles = req.files && req.files.length > 0 ? req.files : (req.file ? [req.file] : []);
+        if (!rawFiles || rawFiles.length === 0) {
             return next(new ApiError(400, 'Please select image files to upload'));
         }
 
+        // Deduplicate files in case frontend appended duplicate FormData fields or triggered duplicate events
+        const uniqueFiles = [];
+        const seen = new Set();
+        for (const file of rawFiles) {
+            const fileKey = `${file.originalname}_${file.size}`;
+            if (!seen.has(fileKey)) {
+                seen.add(fileKey);
+                uniqueFiles.push(file);
+            }
+        }
+
         const folder = req.body.folder || 'products';
-        const results = await uploadMultipleFilesToR2(req.files, folder);
+        const results = await uploadMultipleFilesToR2(uniqueFiles, folder);
 
         res.status(200).json(
             new ApiResponse(200, {
