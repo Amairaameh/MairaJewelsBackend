@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { parsePrice, formatPrice } = require('../utils/priceFormatter');
+const { toPlainObject } = require('../utils/inventoryHelper');
 
 const ProductSchema = new mongoose.Schema({
     customId: {
@@ -85,6 +86,11 @@ const ProductSchema = new mongoose.Schema({
         default: '',
         trim: true
     },
+    sizeStock: {
+        type: Map,
+        of: Number,
+        default: {}
+    },
     badge: {
         type: String,
         default: '',
@@ -117,17 +123,17 @@ const ProductSchema = new mongoose.Schema({
     },
     stock: {
         type: Number,
-        default: 10,
+        default: 0,
         min: 0
     },
     countInStock: {
         type: Number,
-        default: 10,
+        default: 0,
         min: 0
     },
     stockQty: {
         type: Number,
-        default: 10,
+        default: 0,
         min: 0
     },
     featured: {
@@ -211,18 +217,94 @@ ProductSchema.pre('save', function() {
         this.price = formatPrice(this.priceNum);
     }
 
-    // Sync stock fields (stock, countInStock, stockQty, inStock)
-    const stockVal = this.stock !== undefined
-        ? Number(this.stock)
-        : (this.countInStock !== undefined
-            ? Number(this.countInStock)
-            : (this.stockQty !== undefined ? Number(this.stockQty) : 10));
+    // Sanitize sizeStock if passed as string
+    if (typeof this.sizeStock === 'string') {
+        try {
+            this.sizeStock = JSON.parse(this.sizeStock);
+        } catch (e) {
+            this.sizeStock = {};
+        }
+    }
 
-    this.stock = stockVal;
-    this.countInStock = stockVal;
-    this.stockQty = stockVal;
+    const currentPlainStock = toPlainObject(this.sizeStock);
+
+    // Ensure sizes is trimmed string
+    if (this.sizes && typeof this.sizes === 'string') {
+        this.sizes = this.sizes.trim();
+    }
+
+    // Parse sizes string into sizeStock and calculate total stock if explicit quantities specified
+    if (this.sizes && typeof this.sizes === 'string') {
+        const parts = this.sizes.split(',').map(s => s.trim()).filter(Boolean);
+        const parsedStock = {};
+        let hasExplicitQty = false;
+
+        parts.forEach(part => {
+            const parenMatch = part.match(/^(.+?)\s*\(\s*(\d+)\s*\)$/);
+            const colonMatch = part.match(/^(.+?)\s*[:=]\s*(\d+)$/);
+
+            if (parenMatch) {
+                hasExplicitQty = true;
+                const sizeKey = parenMatch[1].trim();
+                const qty = parseInt(parenMatch[2], 10);
+                parsedStock[sizeKey] = isNaN(qty) ? 0 : qty;
+            } else if (colonMatch) {
+                hasExplicitQty = true;
+                const sizeKey = colonMatch[1].trim();
+                const qty = parseInt(colonMatch[2], 10);
+                parsedStock[sizeKey] = isNaN(qty) ? 0 : qty;
+            } else {
+                const sizeKey = part.trim();
+                if (sizeKey && currentPlainStock[sizeKey] !== undefined) {
+                    parsedStock[sizeKey] = Number(currentPlainStock[sizeKey]) || 0;
+                }
+            }
+        });
+
+        if (hasExplicitQty) {
+            this.sizeStock = parsedStock;
+            const totalPerSizeStock = Object.values(parsedStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+            this.stock = totalPerSizeStock;
+            this.countInStock = totalPerSizeStock;
+            this.stockQty = totalPerSizeStock;
+            this.inStock = totalPerSizeStock > 0;
+        } else if (Object.keys(currentPlainStock).length > 0) {
+            const totalPerSizeStock = Object.values(currentPlainStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+            this.stock = totalPerSizeStock;
+            this.countInStock = totalPerSizeStock;
+            this.stockQty = totalPerSizeStock;
+            this.inStock = totalPerSizeStock > 0;
+        }
+    } else if (Object.keys(currentPlainStock).length > 0) {
+        const totalPerSizeStock = Object.values(currentPlainStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+        this.stock = totalPerSizeStock;
+        this.countInStock = totalPerSizeStock;
+        this.stockQty = totalPerSizeStock;
+        this.inStock = totalPerSizeStock > 0;
+        if (!this.sizes) {
+            const formatted = Object.entries(currentPlainStock).map(([sz, qty]) => `${sz} (${Number(qty) || 0})`).join(', ');
+            this.sizes = formatted;
+        }
+    }
+
+    // Sync default stock fields (stock, countInStock, stockQty, inStock) if not derived from sizeStock
+    if (this.stock === undefined || this.stock === null) {
+        const stockVal = this.countInStock !== undefined
+            ? Number(this.countInStock)
+            : (this.stockQty !== undefined ? Number(this.stockQty) : 0);
+
+        this.stock = stockVal;
+        this.countInStock = stockVal;
+        this.stockQty = stockVal;
+    } else {
+        const stockVal = Number(this.stock);
+        this.stock = stockVal;
+        this.countInStock = stockVal;
+        this.stockQty = stockVal;
+    }
+
     if (this.inStock === undefined) {
-        this.inStock = stockVal > 0;
+        this.inStock = (Number(this.stock) || 0) > 0;
     }
 });
 

@@ -1,4 +1,5 @@
 const Order = require('../models/Order.model');
+const User = require('../models/User.model');
 const Payment = require('../models/Payment.model');
 const Product = require('../models/Product.model');
 const ApiError = require('../utils/apiError');
@@ -10,6 +11,7 @@ const {
     sendOrderStatusUpdateEmail
 } = require('../services/email.service');
 const { parsePrice, formatPrice } = require('../utils/priceFormatter');
+const { parseSizesStringToStock, formatSizesString, findSizeStockKey, toPlainObject } = require('../utils/inventoryHelper');
 
 // Helper to locate product for an order item
 const findProductForItem = async (item) => {
@@ -261,18 +263,52 @@ exports.createOrder = async (req, res, next) => {
 
         // 1. Validate stock availability for all items before placing order
         const productsToDeduct = [];
+        const runningStockByProduct = new Map();
+        const runningStockBySize = new Map();
+
         for (const item of normalizedItems) {
             const qtyNeeded = item.quantity;
             const product = await findProductForItem(item);
 
             if (product) {
-                const currentStock = product.stock !== undefined
-                    ? Number(product.stock)
-                    : (product.countInStock !== undefined
-                        ? Number(product.countInStock)
-                        : (product.stockQty !== undefined ? Number(product.stockQty) : 0));
+                const prodIdStr = product._id.toString();
+                const currentStock = runningStockByProduct.has(prodIdStr)
+                    ? runningStockByProduct.get(prodIdStr)
+                    : (product.stock !== undefined
+                        ? Number(product.stock)
+                        : (product.countInStock !== undefined
+                            ? Number(product.countInStock)
+                            : (product.stockQty !== undefined ? Number(product.stockQty) : 0)));
 
-                if (currentStock < qtyNeeded) {
+                const itemSize = (item.size || item.sizes || '').trim();
+                let productSizeStock = toPlainObject(product.sizeStock);
+
+                if (Object.keys(productSizeStock).length === 0 && product.sizes) {
+                    const parsed = parseSizesStringToStock(product.sizes);
+                    if (parsed.hasExplicitQty) {
+                        productSizeStock = parsed.sizeStock;
+                    }
+                }
+
+                const matchedKey = itemSize ? findSizeStockKey(productSizeStock, itemSize) : null;
+
+                if (matchedKey && productSizeStock[matchedKey] !== undefined) {
+                    const sizeKeyMap = `${prodIdStr}_${matchedKey}`;
+                    const availableSizeStock = runningStockBySize.has(sizeKeyMap)
+                        ? runningStockBySize.get(sizeKeyMap)
+                        : (Number(productSizeStock[matchedKey]) || 0);
+
+                    if (availableSizeStock < qtyNeeded) {
+                        return next(
+                            new ApiError(
+                                400,
+                                `Insufficient stock for "${product.name}" in Size ${itemSize || matchedKey}. Required: ${qtyNeeded}, Available: ${availableSizeStock}`
+                            )
+                        );
+                    }
+
+                    runningStockBySize.set(sizeKeyMap, availableSizeStock - qtyNeeded);
+                } else if (currentStock < qtyNeeded) {
                     return next(
                         new ApiError(
                             400,
@@ -281,7 +317,13 @@ exports.createOrder = async (req, res, next) => {
                     );
                 }
 
-                productsToDeduct.push({ product, qtyNeeded, currentStock });
+                runningStockByProduct.set(prodIdStr, currentStock - qtyNeeded);
+                productsToDeduct.push({
+                    productId: product._id,
+                    qtyNeeded,
+                    itemSize,
+                    matchedKey
+                });
             }
         }
 
@@ -312,6 +354,14 @@ exports.createOrder = async (req, res, next) => {
             conciergeAuthorized: agreements?.conciergeAuthorized !== undefined ? Boolean(agreements.conciergeAuthorized) : true
         };
 
+        // Keep User profile contact & address updated
+        if (req.user || resolvedCustomer.email) {
+            User.findOneAndUpdate(
+                req.user ? { _id: req.user.id } : { email: resolvedCustomer.email },
+                { $set: { phone: resolvedCustomer.phone, address: resolvedShippingAddress } }
+            ).catch(() => {});
+        }
+
         const order = await Order.create({
             orderNumber,
             user: req.user ? req.user.id : null,
@@ -332,14 +382,52 @@ exports.createOrder = async (req, res, next) => {
         });
 
         // 2. Accurately deduct stock from inventory
-        for (const { product, qtyNeeded, currentStock } of productsToDeduct) {
-            const newStock = Math.max(0, currentStock - qtyNeeded);
-            await Product.findByIdAndUpdate(product._id, {
-                stock: newStock,
-                countInStock: newStock,
-                stockQty: newStock,
-                inStock: newStock > 0
-            });
+        for (const { productId, qtyNeeded, itemSize, matchedKey } of productsToDeduct) {
+            const currentProd = await Product.findById(productId);
+            if (!currentProd) continue;
+
+            let currentSizeStock = toPlainObject(currentProd.sizeStock);
+
+            if (Object.keys(currentSizeStock).length === 0 && currentProd.sizes) {
+                const parsed = parseSizesStringToStock(currentProd.sizes);
+                if (parsed.hasExplicitQty) {
+                    currentSizeStock = parsed.sizeStock;
+                }
+            }
+
+            const sizeKeyToDeduct = matchedKey || (itemSize ? findSizeStockKey(currentSizeStock, itemSize) : null);
+
+            let updatePayload = {};
+            if (sizeKeyToDeduct && currentSizeStock[sizeKeyToDeduct] !== undefined) {
+                currentSizeStock[sizeKeyToDeduct] = Math.max(0, (Number(currentSizeStock[sizeKeyToDeduct]) || 0) - qtyNeeded);
+                const newStock = Object.values(currentSizeStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+                const updatedSizesString = formatSizesString(currentSizeStock);
+
+                updatePayload = {
+                    sizeStock: currentSizeStock,
+                    sizes: updatedSizesString,
+                    stock: newStock,
+                    countInStock: newStock,
+                    stockQty: newStock,
+                    inStock: newStock > 0
+                };
+            } else {
+                const currentStockVal = currentProd.stock !== undefined
+                    ? Number(currentProd.stock)
+                    : (currentProd.countInStock !== undefined
+                        ? Number(currentProd.countInStock)
+                        : (currentProd.stockQty !== undefined ? Number(currentProd.stockQty) : 0));
+                const newStock = Math.max(0, currentStockVal - qtyNeeded);
+
+                updatePayload = {
+                    stock: newStock,
+                    countInStock: newStock,
+                    stockQty: newStock,
+                    inStock: newStock > 0
+                };
+            }
+
+            await Product.findByIdAndUpdate(currentProd._id, updatePayload);
         }
 
         // Automatically generate payment record
@@ -541,18 +629,52 @@ exports.updateOrderStatus = async (req, res, next) => {
                 const qtyToRestore = Math.max(1, Number(item.quantity) || 1);
                 const product = await findProductForItem(item);
                 if (product) {
-                    const currentStock = product.stock !== undefined
-                        ? Number(product.stock)
-                        : (product.countInStock !== undefined
-                            ? Number(product.countInStock)
-                            : (product.stockQty !== undefined ? Number(product.stockQty) : 0));
-                    const newStock = currentStock + qtyToRestore;
-                    await Product.findByIdAndUpdate(product._id, {
-                        stock: newStock,
-                        countInStock: newStock,
-                        stockQty: newStock,
-                        inStock: newStock > 0
-                    });
+                    const currentProd = await Product.findById(product._id);
+                    if (!currentProd) continue;
+
+                    let currentSizeStock = toPlainObject(currentProd.sizeStock);
+
+                    if (Object.keys(currentSizeStock).length === 0 && currentProd.sizes) {
+                        const parsed = parseSizesStringToStock(currentProd.sizes);
+                        if (parsed.hasExplicitQty) {
+                            currentSizeStock = parsed.sizeStock;
+                        }
+                    }
+
+                    const itemSize = (item.size || item.sizes || '').trim();
+                    const sizeKeyToRestore = itemSize ? findSizeStockKey(currentSizeStock, itemSize) : null;
+
+                    let updatePayload = {};
+                    if (sizeKeyToRestore && currentSizeStock[sizeKeyToRestore] !== undefined) {
+                        currentSizeStock[sizeKeyToRestore] = (Number(currentSizeStock[sizeKeyToRestore]) || 0) + qtyToRestore;
+                        const newStock = Object.values(currentSizeStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+                        const updatedSizesString = formatSizesString(currentSizeStock);
+
+                        updatePayload = {
+                            sizeStock: currentSizeStock,
+                            sizes: updatedSizesString,
+                            stock: newStock,
+                            countInStock: newStock,
+                            stockQty: newStock,
+                            inStock: newStock > 0
+                        };
+                    } else {
+                        const currentStockVal = currentProd.stock !== undefined
+                            ? Number(currentProd.stock)
+                            : (currentProd.countInStock !== undefined
+                                ? Number(currentProd.countInStock)
+                                : (currentProd.stockQty !== undefined ? Number(currentProd.stockQty) : 0));
+                        const newStock = currentStockVal + qtyToRestore;
+
+                        updatePayload = {
+                            stock: newStock,
+                            countInStock: newStock,
+                            stockQty: newStock,
+                            inStock: newStock > 0
+                        };
+                    }
+
+                    await Product.findByIdAndUpdate(currentProd._id, updatePayload);
                 }
             }
         }

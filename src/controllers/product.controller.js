@@ -3,6 +3,7 @@ const ApiError = require('../utils/apiError');
 const ApiResponse = require('../utils/apiResponse');
 const { uploadMultipleFilesToR2, uploadFileToR2, deleteFileFromR2, deleteMultipleFilesFromR2 } = require('../services/r2.service');
 const { parsePrice, formatPrice } = require('../utils/priceFormatter');
+const { parseSizesStringToStock, formatSizesString } = require('../utils/inventoryHelper');
 
 // Helper to find product by either MongoDB _id, customId, sku, or slug
 const findProductByIdOrCustomId = async (id) => {
@@ -212,6 +213,7 @@ exports.createProduct = async (req, res, next) => {
             colors,
             sizes,
             availableSizes,
+            sizeStock,
             badge,
             image,
             images,
@@ -284,14 +286,42 @@ exports.createProduct = async (req, res, next) => {
             else resolvedGem = 'Diamond';
         }
 
-        const resolvedStock = stock !== undefined
-            ? Number(stock)
-            : (countInStock !== undefined
-                ? Number(countInStock)
-                : (stockQty !== undefined ? Number(stockQty) : 10));
-
         const resolvedColor = color !== undefined ? color : (colour !== undefined ? colour : '');
-        const resolvedSizes = sizes !== undefined ? sizes : (availableSizes !== undefined ? availableSizes : '');
+        let resolvedSizes = sizes !== undefined ? sizes : (availableSizes !== undefined ? availableSizes : '');
+
+        let parsedSizeStock = sizeStock;
+        if (typeof parsedSizeStock === 'string') {
+            try {
+                parsedSizeStock = JSON.parse(parsedSizeStock);
+            } catch (e) {
+                parsedSizeStock = {};
+            }
+        }
+        if (!parsedSizeStock || typeof parsedSizeStock !== 'object') {
+            parsedSizeStock = {};
+        }
+
+        let explicitStockFromSizes = null;
+        if (resolvedSizes && typeof resolvedSizes === 'string') {
+            const parsed = parseSizesStringToStock(resolvedSizes, parsedSizeStock);
+            if (parsed.hasExplicitQty) {
+                parsedSizeStock = parsed.sizeStock;
+                explicitStockFromSizes = parsed.totalStock;
+            }
+        } else if (parsedSizeStock && Object.keys(parsedSizeStock).length > 0) {
+            explicitStockFromSizes = Object.values(parsedSizeStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+            if (!resolvedSizes) {
+                resolvedSizes = formatSizesString(parsedSizeStock);
+            }
+        }
+
+        const resolvedStock = explicitStockFromSizes !== null
+            ? explicitStockFromSizes
+            : (stock !== undefined
+                ? Number(stock)
+                : (countInStock !== undefined
+                    ? Number(countInStock)
+                    : (stockQty !== undefined ? Number(stockQty) : 0)));
 
         let parsedColors = [];
         if (colors) {
@@ -321,6 +351,7 @@ exports.createProduct = async (req, res, next) => {
             color: resolvedColor || (parsedColors.length > 0 ? parsedColors.join(', ') : ''),
             colors: parsedColors,
             sizes: resolvedSizes,
+            sizeStock: parsedSizeStock,
             badge: badge ? badge.trim() : '',
             image: parsedImages[0],
             images: parsedImages,
@@ -380,6 +411,40 @@ exports.updateProduct = async (req, res, next) => {
         }
         if (updateData.availableSizes !== undefined && updateData.sizes === undefined) {
             updateData.sizes = updateData.availableSizes;
+        }
+
+        // SizeStock and sizes sync
+        if (updateData.sizeStock !== undefined) {
+            if (typeof updateData.sizeStock === 'string') {
+                try {
+                    updateData.sizeStock = JSON.parse(updateData.sizeStock);
+                } catch (e) {
+                    updateData.sizeStock = {};
+                }
+            }
+            if (updateData.sizeStock && typeof updateData.sizeStock === 'object') {
+                if (updateData.sizes === undefined) {
+                    updateData.sizes = formatSizesString(updateData.sizeStock);
+                }
+                if (updateData.stock === undefined && updateData.countInStock === undefined && updateData.stockQty === undefined) {
+                    const totalPerSize = Object.values(updateData.sizeStock).reduce((sum, q) => sum + (Number(q) || 0), 0);
+                    updateData.stock = totalPerSize;
+                    updateData.countInStock = totalPerSize;
+                    updateData.stockQty = totalPerSize;
+                    updateData.inStock = totalPerSize > 0;
+                }
+            }
+        } else if (updateData.sizes !== undefined && typeof updateData.sizes === 'string') {
+            const parsed = parseSizesStringToStock(updateData.sizes, product.sizeStock || {});
+            if (parsed.hasExplicitQty) {
+                updateData.sizeStock = parsed.sizeStock;
+                if (updateData.stock === undefined && updateData.countInStock === undefined && updateData.stockQty === undefined) {
+                    updateData.stock = parsed.totalStock;
+                    updateData.countInStock = parsed.totalStock;
+                    updateData.stockQty = parsed.totalStock;
+                    updateData.inStock = parsed.totalStock > 0;
+                }
+            }
         }
 
         // Colors array and string synchronization
