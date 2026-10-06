@@ -11,6 +11,7 @@ const faqRoutes = require('./faq.routes');
 const settingRoutes = require('./setting.routes');
 const dashboardRoutes = require('./dashboard.routes');
 const uploadRoutes = require('./upload.routes');
+const shippingRoutes = require('./shipping.routes');
 
 // Healthcheck
 router.get('/health', (req, res) => {
@@ -34,6 +35,7 @@ router.use('/faqs', faqRoutes);
 router.use('/settings', settingRoutes);
 router.use('/dashboard', dashboardRoutes);
 router.use('/upload', uploadRoutes);
+router.use('/shipping', shippingRoutes);
 
 const { protect, authorize } = require('../middlewares/auth.middleware');
 const User = require('../models/User.model');
